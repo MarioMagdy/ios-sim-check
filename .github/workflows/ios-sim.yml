@@ -80,6 +80,11 @@ jobs:
           xcrun simctl ui "$UDID" appearance dark
           xcrun simctl ui "$UDID" appearance
 
+      - name: Warm up Mobile Safari
+        run: |
+          xcrun simctl openurl booted https://example.com || true
+          sleep 25
+          xcrun simctl terminate booted com.apple.mobilesafari || true
       - name: Install and start Appium (driver=appium)
         if: env.IN_DRIVER == 'appium'
         run: |

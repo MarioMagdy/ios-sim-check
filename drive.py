@@ -130,6 +130,10 @@ def make_driver():
         o.set_capability("appium:wdaConnectionTimeout", 300000)
         o.set_capability("appium:newCommandTimeout", 600)
         o.set_capability("appium:safariIgnoreFraudWarning", True)
+        # A fresh runner launches Safari slowly; wait longer for its web view and start on a blank page.
+        o.set_capability("appium:webviewConnectTimeout", 90000)
+        o.set_capability("appium:webviewConnectRetries", 20)
+        o.set_capability("appium:safariInitialUrl", "about:blank")
     else:
         o.set_capability("safari:useSimulator", True)
         o.set_capability("safari:deviceType", "iPhone")
