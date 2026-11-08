@@ -1,0 +1,123 @@
+name: ios-sim
+
+# Manual only. Drives Mobile Safari on a real iOS Simulator and uploads full-device screenshots.
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "Simulator device name"
+        default: "iPhone 17 Pro"
+        required: true
+        type: string
+      runtime:
+        description: "Optional runtime, e.g. iOS-26-4 or 26.4 (empty = newest installed iOS)"
+        default: ""
+        required: false
+        type: string
+      driver:
+        description: "WebDriver stack: appium (known to work) or safaridriver (Apple, unverified for Simulator)"
+        default: "appium"
+        required: true
+        type: choice
+        options: [appium, safaridriver]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-sim
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    # Apple Silicon image. If macos-26 is unavailable, change to macos-15 (Xcode 16.x / iOS 18.x runtimes;
+    # pass device "iPhone 16 Pro" because "iPhone 17 Pro" will not exist there).
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      APP_URL: ${{ secrets.APP_URL }}
+      APP_USER: ${{ secrets.APP_USER }}
+      APP_PASS: ${{ secrets.APP_PASS }}
+      APP_ADMIN_USER: ${{ secrets.APP_ADMIN_USER }}
+      APP_ADMIN_PASS: ${{ secrets.APP_ADMIN_PASS }}
+      IN_DEVICE: ${{ inputs.device }}
+      IN_RUNTIME: ${{ inputs.runtime }}
+      IN_DRIVER: ${{ inputs.driver }}
+      OUT: ${{ github.workspace }}/out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mask secrets (defensive)
+        run: |
+          mask() { [ -n "$1" ] && echo "::add-mask::$1"; return 0; }
+          mask "$APP_URL"; mask "$APP_USER"; mask "$APP_PASS"; mask "$APP_ADMIN_USER"; mask "$APP_ADMIN_PASS"
+          # Also mask the bare host and the random subdomain label
+          host="${APP_URL#*://}"; host="${host%%/*}"
+          mask "$host"; mask "${host%%.*}"
+          mkdir -p "$OUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install selenium
+        run: python -m pip install --quiet "selenium>=4.20,<5"
+
+      - name: List Xcode, runtimes, devices
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devicetypes | grep -i iphone || true
+          xcrun simctl list devices available | tee "$OUT/devices.txt"
+
+      - name: Pick, create and boot the simulator
+        run: python setup_sim.py   # writes UDID to $GITHUB_ENV
+
+      - name: Clean status bar and dark appearance
+        run: |
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 \
+            --cellularMode active --cellularBars 4 --wifiMode active --wifiBars 3 --operatorName ""
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl ui "$UDID" appearance
+
+      - name: Install and start Appium (driver=appium)
+        if: env.IN_DRIVER == 'appium'
+        run: |
+          npm install -g appium
+          appium driver install xcuitest
+          nohup appium --log-no-colors --address 127.0.0.1 --port 4723 > "$OUT/appium.log" 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:4723/status >/dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:4723/status >/dev/null
+          echo "SERVER_URL=http://127.0.0.1:4723" >> "$GITHUB_ENV"
+
+      - name: Start safaridriver (driver=safaridriver)
+        if: env.IN_DRIVER == 'safaridriver'
+        run: |
+          sudo safaridriver --enable
+          nohup safaridriver -p 4444 > "$OUT/safaridriver.log" 2>&1 &
+          sleep 3
+          echo "SERVER_URL=http://127.0.0.1:4444" >> "$GITHUB_ENV"
+
+      - name: Drive the journey
+        env:
+          DRIVER: ${{ inputs.driver }}
+        run: python drive.py
+
+      - name: Write summary.md
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: python summary.py
+
+      - name: Collect simulator crash logs (names only)
+        if: always()
+        run: ls ~/Library/Logs/DiagnosticReports 2>/dev/null > "$OUT/crash-reports.txt" || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-screenshots
+          path: out/
+          retention-days: 1
+          if-no-files-found: warn
