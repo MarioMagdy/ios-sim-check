@@ -287,9 +287,34 @@ def go_home():
     time.sleep(3)
 
 
+def skip_tour():
+    """Dismiss the first-run tour if it shows (its Skip button)."""
+    for _ in range(2):
+        b = find([("text", "skip")], 2)
+        if b is None:
+            return
+        tap(b)
+        time.sleep(1)
+
+
 def login(user, pw):
+    """Sign in through the app's own login API from inside the page, so Safari never sees a submitted
+    password form and never raises its "Save Password?" sheet (which blocked the first run)."""
     if not on_login_page():
+        skip_tour()
         return "already signed in"
+    status = driver.execute_async_script(
+        "const [u,p,done]=arguments; fetch('/api/auth/login',{method:'POST',credentials:'include',"
+        "headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},"
+        "body:JSON.stringify({username:u,password:p})}).then(r=>done(r.status)).catch(e=>done(String(e)));",
+        user, pw)
+    if status == 200:
+        driver.get(APP_URL)
+        time.sleep(4)
+        if not on_login_page():
+            skip_tour()
+            return "signed in via API"
+    log("API login status", status, "- falling back to the form")
     u = None
     for css in ("input[type=email]", "input[autocomplete=username]", "input[name*=user i]",
                 "input[name*=email i]", "input[type=text]"):
@@ -323,6 +348,7 @@ def login(user, pw):
     time.sleep(4)
     if on_login_page():
         raise Missing("still on login page after submit (wrong credentials or button not found)")
+    skip_tour()
 
 
 def logout():
@@ -408,6 +434,10 @@ def main():
         return 1
     log("creating session via", DRIVER)
     driver = make_driver()
+    try:
+        driver.set_script_timeout(40)
+    except Exception:
+        pass
     try:
         driver.set_page_load_timeout(60)
     except Exception:
