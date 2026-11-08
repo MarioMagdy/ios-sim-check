@@ -40,6 +40,9 @@ jobs:
       APP_PASS: ${{ secrets.APP_PASS }}
       APP_ADMIN_USER: ${{ secrets.APP_ADMIN_USER }}
       APP_ADMIN_PASS: ${{ secrets.APP_ADMIN_PASS }}
+      BOOK_AR: ${{ vars.BOOK_AR }}
+      BOOK_EN: ${{ vars.BOOK_EN }}
+      BOOK_TRIAL: ${{ vars.BOOK_TRIAL }}
       IN_DEVICE: ${{ inputs.device }}
       IN_RUNTIME: ${{ inputs.runtime }}
       IN_DRIVER: ${{ inputs.driver }}

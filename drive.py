@@ -29,6 +29,7 @@ DEVICE = os.environ.get("DEVICE_NAME", "iPhone 17 Pro")
 PLATFORM_VERSION = os.environ.get("PLATFORM_VERSION", "")
 APP_URL = os.environ.get("APP_URL", "").strip()
 USER, PASS = os.environ.get("APP_USER", ""), os.environ.get("APP_PASS", "")
+BOOK_AR, BOOK_EN, BOOK_TRIAL = (os.environ.get(k, "") for k in ("BOOK_AR", "BOOK_EN", "BOOK_TRIAL"))
 ADMIN_USER, ADMIN_PASS = os.environ.get("APP_ADMIN_USER", ""), os.environ.get("APP_ADMIN_PASS", "")
 
 os.makedirs(OUT, exist_ok=True)
@@ -445,61 +446,68 @@ def main():
     try:
         step("a1 start screen first second", start_screen, shot=False)
         step("a2 login page after load", lambda: time.sleep(3), settle=0)
-        step("b login user", lambda: login(USER, PASS), settle=1)
+        step("b shelf after login", lambda: login(USER, PASS), settle=2)
 
-        def c():
-            open_book("[\\u0600-\\u06FF]", "Arabic book")
-            tap_middle()
-        step("c arabic reader bars shown", c)
+        # Direct, label-based steps (the same JS that worked on the laptop): open books by URL, press
+        # buttons by their accessible names. Book ids come from repo variables BOOK_AR / BOOK_EN / BOOK_TRIAL.
+        def js(body):
+            r = driver.execute_async_script(
+                "const done=arguments[arguments.length-1]; const W=ms=>new Promise(r=>setTimeout(r,ms));"
+                "const btn=(re)=>[...document.querySelectorAll('button')].find(b=>re.test((b.getAttribute('aria-label')||'')+' '+b.textContent.trim()));"
+                "(async()=>{" + body + "})().then(v=>done(v===undefined?'ok':String(v))).catch(e=>done('ERR '+e));")
+            log("js:", r)
+            if isinstance(r, str) and (r.startswith("ERR") or r.startswith("MISSING")):
+                raise Missing(r)
+            return r
 
-        step("d1 listen sheet", open_listen_sheet)
-        step("d2 change voice", lambda: click(AT("change voice"), 5, "Change voice"))
-
-        step("e1 prepare sheet", lambda: click(AT("prepare"), 5, "Prepare (first voice row)"))
-
-        def e2():
-            click(AT("whole book"), 5, "Whole book")
-            click(AT("continue"), 5, "Continue")
-            time.sleep(2)
-        step("e2 price screen", e2)
-        step("e3 back from price (no narration)", close_sheet)
-
-        def f():
-            ensure_shelf()
-            go_home()
-            open_book("[A-Za-z]{4}", "English book", exclude_js="[\\u0600-\\u06FF]|Trial")
-            tap_middle()
-            open_listen_sheet()
-        step("f english book listen sheet", f)
-
-        step("g1 theme sepia", lambda: theme_to("Sepia"))
-        step("g2 theme light", lambda: theme_to("Light"))
-
-        def h1():
-            go_home()
-            return logout()
-        step("h1 logged out", h1)
-        step("h2 login admin", lambda: login(ADMIN_USER, ADMIN_PASS))
-
-        def h3():
-            open_book("Trial", "book titled Trial")
-            tap_middle()
-            open_listen_sheet()
-        step("h3 trial book listen sheet", h3)
-
-        def h4():
-            click([("aria", "play"), ("text", "play")], 5, "Play")
+        def open_reader(book):
+            driver.get(APP_URL.rstrip("/") + "/room/" + book)
             time.sleep(6)
-        step("h4 playing (pill under island)", h4, settle=0)
+            js("for(let i=0;i<30&&/Opening book/.test(document.body.innerText);i++) await W(1000);"
+               "await W(1200); document.querySelector('[role=application]')?.click(); await W(1200);"
+               "return document.querySelector('[role=application]')?'reader':'MISSING reader';")
 
-        def h5():
-            click([("aria", "stop"), ("text", "stop")], 4, "Stop")
-        step("h5 stop", h5)
+        LISTEN = ("const b=btn(/Listening settings/); if(!b) return 'MISSING listen chip'; b.click(); await W(2500);")
 
-        def i():
+        step("c arabic reader bars shown", lambda: open_reader(BOOK_AR))
+        step("d1 listen sheet (Elias first)", lambda: js(LISTEN))
+        step("e1 prepare sheet (voice preselected)",
+             lambda: js("const b=btn(/Prepare ·|Continue preparing/); if(!b) return 'MISSING prepare'; b.click(); await W(3000);"))
+        step("e2 change voice list (Continue pinned)",
+             lambda: js("const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Change'); if(!b) return 'MISSING change'; b.click(); await W(1500);"))
+        step("e3 price after Continue (not started)",
+             lambda: js("const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Continue'); if(!b) return 'MISSING continue'; b.click(); await W(3500);"))
+        step("f english book listen sheet (James first)", lambda: (open_reader(BOOK_EN), js(LISTEN)))
+
+        def theme(n):
+            driver.get(APP_URL)
+            time.sleep(4)
+            js("for(let i=0;i<%d;i++){ const b=btn(/Reading theme/); if(!b) return 'MISSING theme'; b.click(); await W(900);} return btn(/Reading theme/)?.getAttribute('aria-label');" % n)
+            open_reader(BOOK_AR)
+        step("g1 reader sepia, bars shown", lambda: theme(1))
+        step("g2 reader light, bars shown", lambda: theme(1))
+        step("g3 back to dark", lambda: theme(1))
+
+        def admin():
+            js("await fetch('/api/auth/logout',{method:'POST',credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}}).catch(()=>{});")
+            driver.get(APP_URL.rstrip("/") + "/login")
+            time.sleep(3)
+            login(ADMIN_USER, ADMIN_PASS)
+            open_reader(BOOK_TRIAL)
+            js(LISTEN)
+        step("h1 admin: Trial listen sheet (recorded Elias)", admin)
+        step("h2 playing: pill under the Dynamic Island",
+             lambda: js("const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Play'); if(!b) return 'MISSING play'; b.click(); await W(1500);"
+                        "const c=[...document.querySelectorAll('[role=dialog] button')].find(x=>/^Close/.test(x.getAttribute('aria-label')||'')); c?.click(); await W(6000);"
+                        "return document.querySelector('.room-narration-pill')?'pill shown':'no pill element';"), settle=0)
+        step("h3 bars up while playing (pill hidden)",
+             lambda: js("document.querySelector('[role=application]')?.click(); await W(1500);"))
+        step("h4 stopped", lambda: js("const b=btn(/Stop reading|^Stop$/); b?.click(); await W(1500); return b?'stopped':'MISSING stop';"))
+
+        def land():
             set_orientation("LANDSCAPE")
             time.sleep(2)
-        step("i landscape", i, settle=1)
+        step("i landscape", land, settle=1)
         try:
             set_orientation("PORTRAIT")
         except Exception:
